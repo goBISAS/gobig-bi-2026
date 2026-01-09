@@ -5,199 +5,194 @@ import plotly.graph_objects as go
 import gspread
 from google.oauth2.service_account import Credentials
 import json
+from datetime import datetime, date
 
-# --- CONFIGURACIÓN DE PÁGINA ---
+# --- CONFIGURACIÓN ---
 st.set_page_config(page_title="goBIG BI 2026", page_icon="🚀", layout="wide")
+st.markdown("""<style>.main {background-color: #0e1117;} .stMetric {background-color: #262730; border: 1px solid #444;}</style>""", unsafe_allow_html=True)
 
-# Estilos CSS Profesionales
-st.markdown("""
-    <style>
-    .main { background-color: #0e1117; }
-    .stMetric { background-color: #262730; padding: 15px; border-radius: 5px; border: 1px solid #444; }
-    h1, h2, h3 { color: #fff; }
-    </style>
-    """, unsafe_allow_html=True)
-
-# --- FUNCIÓN DE LIMPIEZA DE MONEDA (LA JOYA DE LA CORONA) ---
+# --- UTILIDADES ---
 def limpiar_moneda_colombia(serie):
-    """Convierte formatos colombianos ($ 1.000.000,00) a números Python puros."""
-    serie = serie.astype(str)
-    serie = serie.str.replace(r'[$\s]', '', regex=True) # Quitar $ y espacios
-    serie = serie.str.replace('.', '', regex=False)     # Quitar puntos de mil
-    serie = serie.str.replace(',', '.', regex=False)    # Cambiar coma por punto
+    serie = serie.astype(str).str.replace(r'[$\s]', '', regex=True).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
     return pd.to_numeric(serie, errors='coerce').fillna(0)
 
-# --- MOTOR DE DATOS ---
+def get_colombia_holidays_2026():
+    # Festivos 2026
+    return ["2026-01-01", "2026-01-12", "2026-03-23", "2026-03-26", "2026-03-27", "2026-05-01", 
+            "2026-05-18", "2026-06-08", "2026-06-15", "2026-06-29", "2026-07-20", "2026-08-07", 
+            "2026-08-17", "2026-10-12", "2026-11-02", "2026-11-16", "2026-12-08", "2026-12-25"]
+
+# --- CARGA DE DATOS ---
 @st.cache_data(ttl=600)
-def load_data(fin_id, ops_id):
-    # 1. Autenticación Segura
+def load_data(ids):
     json_str = st.secrets["credenciales_json"]
     key_dict = json.loads(json_str, strict=False)
-    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    creds = Credentials.from_service_account_info(key_dict, scopes=scopes)
+    creds = Credentials.from_service_account_info(key_dict, scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
     client = gspread.authorize(creds)
     
-    # 2. CARGAR FINANCIERO
-    sh_fin = client.open_by_key(fin_id)
-    ws_movs = sh_fin.worksheet("01_Movimientos financieros desde 2026")
-    df_fin = pd.DataFrame(ws_movs.get_all_records())
+    # 1. FINANCIERO (REAL)
+    df_fin = pd.DataFrame(client.open_by_key(ids['fin']).worksheet("01_Movimientos financieros desde 2026").get_all_records())
+    df_fin.columns = df_fin.columns.str.strip()
+    col_monto = next((c for c in df_fin.columns if "Monto" in c or "Valor" in c), None)
+    col_fecha = next((c for c in df_fin.columns if "Fecha" in c), None)
+    if col_monto: df_fin[col_monto] = limpiar_moneda_colombia(df_fin[col_monto])
     
-    # Limpieza Financiera
-    df_fin.columns = df_fin.columns.str.strip() # Limpiar nombres de columnas
-    
-    # Detección automática de la columna Monto
-    col_monto = None
-    possible_names = ["Monto del movimiento", "Monto", "Valor", "Monto del movimiento (negativo o positivo)"]
-    for col in df_fin.columns:
-        for name in possible_names:
-            if name in col:
-                col_monto = col
-                break
-        if col_monto: break
-            
-    if col_monto:
-        df_fin[col_monto] = limpiar_moneda_colombia(df_fin[col_monto])
-
-    # 3. CARGAR BACKLOG (OPERATIVA) - ¡REACTIVADO!
-    sh_ops = client.open_by_key(ops_id)
-    consultores = ["Sebastian Saenz", "Alejandra Buriticá", "Alejandra Cárdenas", "Jimmy Peña"]
+    # 2. BACKLOG (OPERATIVA)
+    sh_ops = client.open_by_key(ids['ops'])
     all_tasks = []
-    
-    for consultor in consultores:
+    for consultor in ["Sebastian Saenz", "Alejandra Buriticá", "Alejandra Cárdenas", "Jimmy Peña"]:
         try:
-            ws = sh_ops.worksheet(consultor)
-            raw_data = ws.get_all_values()
-            # Asumimos que los encabezados están en la fila 5 (índice 4)
-            if len(raw_data) > 5:
-                headers = raw_data[4]
-                rows = raw_data[5:]
-                temp_df = pd.DataFrame(rows, columns=headers)
-                temp_df['Consultor'] = consultor
-                
-                # Limpiar columnas de tiempo
-                for c_tiempo in ['Tiempo estimado', 'Tiempo real']:
-                    if c_tiempo in temp_df.columns:
-                        # Reemplazar coma por punto para decimales de horas
-                        temp_df[c_tiempo] = temp_df[c_tiempo].astype(str).str.replace(',', '.', regex=False)
-                        temp_df[c_tiempo] = pd.to_numeric(temp_df[c_tiempo], errors='coerce').fillna(0)
-                
-                all_tasks.append(temp_df)
-        except Exception:
-            pass # Si una hoja no existe, continuamos
-            
+            raw = sh_ops.worksheet(consultor).get_all_values()
+            if len(raw) > 5:
+                df = pd.DataFrame(raw[5:], columns=raw[4])
+                df['Consultor'] = consultor
+                for c in ['Tiempo estimado', 'Tiempo real']:
+                    if c in df.columns:
+                        df[c] = pd.to_numeric(df[c].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
+                all_tasks.append(df)
+        except: pass
     df_ops = pd.concat(all_tasks, ignore_index=True) if all_tasks else pd.DataFrame()
 
-    return df_fin, df_ops, col_monto
+    # 3. PROYECCIÓN (FACTURACIÓN Y COSTOS FIJOS) - NUEVO FASE 2
+    # Costos Fijos
+    try:
+        df_fijos = pd.DataFrame(client.open_by_key(ids['fijos']).worksheet("05_Costos fijos desde 2026").get_all_records())
+        col_monto_fijo = next((c for c in df_fijos.columns if "Monto" in c), None)
+        total_fijos_mes = limpiar_moneda_colombia(df_fijos[col_monto_fijo]).sum() if col_monto_fijo else 0
+    except: total_fijos_mes = 0
+    
+    # Facturación Proyectada
+    try:
+        df_fact = pd.DataFrame(client.open_by_key(ids['fact']).worksheet("02_Cuadro de facturación desde 2026").get_all_records())
+        col_total_fact = next((c for c in df_fact.columns if "Total" in c or "Precio" in c), None) # Buscamos Total Factura
+        col_mes_fact = next((c for c in df_fact.columns if "Mes" in c), None)
+        if col_total_fact: df_fact[col_total_fact] = limpiar_moneda_colombia(df_fact[col_total_fact])
+    except: 
+        df_fact = pd.DataFrame()
+        col_total_fact, col_mes_fact = None, None
 
-# --- CONFIGURACIÓN DE IDs (TU PARTE) ---
-# 👇 PEGA AQUÍ TUS IDs REALES 👇
-ID_FINANCIERO = "1ldntONNpWFgXPcF8VINDKzNAhG_vGMdzGEOESM3aLNU"
-ID_BACKLOG    = "1Vl5rhQDi6YooJgjYAF76oOO0aN8rbPtu07giky36wSo"
-# 👆 -------------------------- 👆
+    return df_fin, df_ops, df_fact, total_fijos_mes, col_monto, col_fecha, col_total_fact, col_mes_fact
 
-# Carga de Datos
+# --- IDs ---
+IDS = {
+    'fin': "1ldntONNpWFgXPcF8VINDKzNAhG_vGMdzGEOESM3aLNU", # Financiero
+    'ops': "1Vl5rhQDi6YooJgjYAF76oOO0aN8rbPtu07giky36wSo", # Backlog
+    'fact': "1ldntONNpWFgXPcF8VINDKzNAhG_vGMdzGEOESM3aLNU", # Facturación (Asumiendo que está en el mismo archivo maestro)
+    'fijos': "1ldntONNpWFgXPcF8VINDKzNAhG_vGMdzGEOESM3aLNU" # Costos Fijos (Asumiendo que está en el mismo archivo maestro)
+}
+# NOTA: He puesto el mismo ID para facturación y fijos porque en tu PDF decían "Link al archivo maestro". 
+# Si están en otro archivo, cámbialos.
+
 try:
-    df_fin, df_ops, col_monto = load_data(ID_FINANCIERO, ID_BACKLOG)
+    df_fin, df_ops, df_fact, total_fijos, col_monto, col_fecha, col_fact, col_mes = load_data(IDS)
 except Exception as e:
     st.error(f"Error cargando datos: {e}")
     st.stop()
 
-# --- INTERFAZ DE USUARIO ---
+# --- INTERFAZ ---
 st.sidebar.title("goBIG Intelligence")
-st.sidebar.markdown("---")
-view_mode = st.sidebar.radio("Navegación:", 
-    ["1. Financiera (Cash Flow)", 
-     "2. Rentabilidad (Clientes)", 
-     "3. Operativa (Eficiencia)"])
+page = st.sidebar.radio("Navegación:", ["🏠 Home", "💰 Financiera", "⚙️ Operativa"])
 
-st.sidebar.info("🟢 Sistema Online")
-
-# --- VISTA 1: FINANCIERA ---
-if "Financiera" in view_mode:
-    st.title("💰 Financiera: Flujo de Caja Real")
+if "Home" in page:
+    st.title("🏠 Tablero de Control 2026")
     
-    if col_monto and not df_fin.empty:
-        # KPIs
-        ingresos = df_fin[df_fin[col_monto] > 0][col_monto].sum()
-        egresos = df_fin[df_fin[col_monto] < 0][col_monto].sum()
-        balance = ingresos + egresos
+    # Lógica de Fechas (Desde Enero 1)
+    hoy = datetime.now()
+    inicio = datetime(2026, 1, 1)
+    fin = datetime(2026, 12, 31)
+    
+    dias_transcurridos = (hoy - inicio).days + 1
+    progreso = dias_transcurridos / 365
+    
+    # Días Hábiles
+    from datetime import timedelta
+    festivos = get_colombia_holidays_2026()
+    habiles_pasados = 0
+    temp = inicio
+    while temp <= hoy:
+        if temp.weekday() < 5 and str(temp.date()) not in festivos: habiles_pasados += 1
+        temp += timedelta(days=1)
         
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Ingresos Totales", f"${ingresos:,.0f}")
-        c2.metric("Egresos Totales", f"${egresos:,.0f}")
-        c3.metric("Flujo de Caja Neto", f"${balance:,.0f}", delta_color="normal")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Progreso Año 2026", f"{progreso*100:.1f}%", f"Día {dias_transcurridos}")
+    c2.metric("Días Hábiles Pasados", f"{habiles_pasados} días", "Desde Ene 1")
+    c3.metric("Costos Fijos Mensuales", f"${total_fijos:,.0f}", "Base Operativa")
+
+elif "Financiera" in page:
+    st.title("💰 Financiera: Plan vs. Realidad")
+    
+    # 1. Preparar Datos para Gráfica
+    meses_orden = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+    
+    # A) Proyectado (Presupuesto)
+    datos_proyeccion = []
+    for mes in meses_orden:
+        # Ingresos Proyectados (Suma facturas de ese mes)
+        ingreso_mes = 0
+        if not df_fact.empty and col_mes and col_fact:
+            ingreso_mes = df_fact[df_fact[col_mes].str.lower() == mes][col_fact].sum()
         
-        st.markdown("---")
+        datos_proyeccion.append({
+            "Mes": mes, 
+            "Tipo": "Proyectado Ingreso", 
+            "Monto": ingreso_mes
+        })
+        datos_proyeccion.append({
+            "Mes": mes, 
+            "Tipo": "Proyectado Egreso (Fijo)", 
+            "Monto": total_fijos # Asumimos fijo constante
+        })
         
-        # Gráfica Principal: Balance por Centro de Costos
-        # Buscamos la columna de Centro de Costos flexiblemente
-        col_cc = next((c for c in df_fin.columns if "Centro" in c), None)
+    # B) Real (Ejecutado)
+    # Necesitamos extraer el mes de la fecha del movimiento financiero
+    if not df_fin.empty and col_fecha:
+        # Convertir fecha a datetime y sacar nombre mes
+        # Formatos posibles: DD/MM/YYYY o YYYY-MM-DD
+        df_fin['Fecha_dt'] = pd.to_datetime(df_fin[col_fecha], dayfirst=True, errors='coerce')
+        df_fin['Mes_Nombre'] = df_fin['Fecha_dt'].dt.month_name(locale='es_ES') # Requiere locale, hacemos mapa manual mejor
+        mapa_meses = {1: 'enero', 2: 'febrero', 3: 'marzo', 4: 'abril', 5: 'mayo', 6: 'junio', 
+                      7: 'julio', 8: 'agosto', 9: 'septiembre', 10: 'octubre', 11: 'noviembre', 12: 'diciembre'}
+        df_fin['Mes_Nombre'] = df_fin['Fecha_dt'].dt.month.map(mapa_meses)
         
-        if col_cc:
-            df_grouped = df_fin.groupby(col_cc)[col_monto].sum().reset_index()
-            # Ordenamos para ver mejor los ganadores y perdedores
-            df_grouped = df_grouped.sort_values(by=col_monto, ascending=False)
+        for mes in meses_orden:
+            df_mes = df_fin[df_fin['Mes_Nombre'] == mes]
+            ingreso_real = df_mes[df_mes[col_monto] > 0][col_monto].sum()
+            egreso_real = abs(df_mes[df_mes[col_monto] < 0][col_monto].sum()) # Valor absoluto para comparar
             
-            fig = px.bar(df_grouped, x=col_cc, y=col_monto, 
-                         color=col_monto, 
-                         color_continuous_scale="RdBu",
-                         title="Balance por Cliente / Centro de Costos",
-                         text_auto='.2s')
-            fig.update_layout(template="plotly_dark", height=500)
+            datos_proyeccion.append({"Mes": mes, "Tipo": "Real Ingreso", "Monto": ingreso_real})
+            datos_proyeccion.append({"Mes": mes, "Tipo": "Real Egreso", "Monto": egreso_real})
+
+    df_chart = pd.DataFrame(datos_proyeccion)
+    
+    # 2. Gráfica Combinada
+    st.subheader("Evolución Mensual: Lo que dijimos vs. Lo que hicimos")
+    
+    fig = go.Figure()
+    
+    # Líneas de Proyección
+    df_p_in = df_chart[df_chart['Tipo'] == "Proyectado Ingreso"]
+    fig.add_trace(go.Scatter(x=df_p_in['Mes'], y=df_p_in['Monto'], name="Proy. Facturación", line=dict(color='#00CC96', dash='dot')))
+    
+    df_p_out = df_chart[df_chart['Tipo'] == "Proyectado Egreso (Fijo)"]
+    fig.add_trace(go.Scatter(x=df_p_out['Mes'], y=df_p_out['Monto'], name="Proy. Costos Fijos", line=dict(color='#EF553B', dash='dot')))
+    
+    # Barras Reales
+    df_r_in = df_chart[df_chart['Tipo'] == "Real Ingreso"]
+    fig.add_trace(go.Bar(x=df_r_in['Mes'], y=df_r_in['Monto'], name="Ingreso Real", marker_color='#00CC96', opacity=0.6))
+    
+    df_r_out = df_chart[df_chart['Tipo'] == "Real Egreso"]
+    fig.add_trace(go.Bar(x=df_r_out['Mes'], y=df_r_out['Monto'], name="Egreso Real", marker_color='#EF553B', opacity=0.6))
+    
+    fig.update_layout(template="plotly_dark", barmode='group', height=500)
+    st.plotly_chart(fig, use_container_width=True)
+
+elif "Operativa" in page:
+    st.title("⚙️ Operativa")
+    # Treemap por Colaborador
+    if not df_ops.empty:
+        st.subheader("Mapa de Calor de Esfuerzo")
+        # Aseguramos que existan las columnas
+        if 'Consultor' in df_ops.columns and 'Tipo de tarea' in df_ops.columns:
+            fig = px.treemap(df_ops, path=['Consultor', 'Tipo de tarea'], values='Tiempo real', color='Consultor')
+            fig.update_layout(template="plotly_dark")
             st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.warning("No se detectó columna de Centro de Costos.")
-    else:
-        st.info("No hay datos financieros registrados aún.")
-
-# --- VISTA 2: RENTABILIDAD ---
-elif "Rentabilidad" in view_mode:
-    st.title("💎 Rentabilidad por Cliente")
-    st.markdown("""
-    > **Objetivo:** Cruzar lo facturado vs. lo que nos cuesta el equipo.
-    """)
-    st.info("🚧 Próximo paso: Conectar Hoja de Facturación y Diccionario de Recursos.")
-    
-    # Mostramos un adelanto de la actividad del equipo
-    if not df_ops.empty:
-        st.subheader("Esfuerzo del Equipo (Input de Costos)")
-        df_costos = df_ops.groupby("Nombre del cliente")['Tiempo real'].sum().reset_index()
-        fig = px.pie(df_costos, values='Tiempo real', names='Nombre del cliente', hole=0.4, title="Distribución de Horas por Cliente")
-        fig.update_layout(template="plotly_dark")
-        st.plotly_chart(fig)
-
-# --- VISTA 3: OPERATIVA ---
-elif "Operativa" in view_mode:
-    st.title("⚙️ Operativa: Desempeño del Equipo")
-    
-    if not df_ops.empty:
-        # KPIs Generales
-        total_horas = df_ops['Tiempo real'].sum()
-        total_estimado = df_ops['Tiempo estimado'].sum()
-        
-        k1, k2 = st.columns(2)
-        k1.metric("Horas Ejecutadas (Real)", f"{total_horas:.1f} h")
-        k2.metric("Horas Planificadas", f"{total_estimado:.1f} h")
-        
-        st.markdown("---")
-        
-        # Gráfica 1: Eficiencia por Consultor
-        st.subheader("1. Precisión de Estimaciones")
-        df_eff = df_ops.groupby("Consultor")[['Tiempo estimado', 'Tiempo real']].sum().reset_index()
-        
-        fig_eff = go.Figure()
-        fig_eff.add_trace(go.Bar(x=df_eff['Consultor'], y=df_eff['Tiempo estimado'], name='Estimado', marker_color='#4a86e8'))
-        fig_eff.add_trace(go.Bar(x=df_eff['Consultor'], y=df_eff['Tiempo real'], name='Real', marker_color='#fbbc04'))
-        fig_eff.update_layout(barmode='group', template="plotly_dark", title="¿Quién está sobre o sub estimando?")
-        st.plotly_chart(fig_eff, use_container_width=True)
-        
-        # Gráfica 2: Carga de Trabajo
-        st.subheader("2. Tipos de Tarea")
-        if 'Tipo de tarea' in df_ops.columns:
-            fig_tree = px.treemap(df_ops, path=['Tipo de tarea', 'Consultor'], values='Tiempo real', 
-                                  title="Mapa de Calor de Actividades")
-            fig_tree.update_layout(template="plotly_dark")
-            st.plotly_chart(fig_tree, use_container_width=True)
-            
-    else:
-        st.warning("⚠️ No se encontraron datos en el Backlog. Verifica que los nombres de las pestañas en el Sheet coincidan con los nombres en el código: Sebastian Saenz, Alejandra Buriticá, etc.")
