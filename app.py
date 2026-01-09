@@ -18,91 +18,79 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- CONEXIÓN SEGURA A GOOGLE SHEETS ---
+# --- CONEXIÓN SEGURA ---
 @st.cache_data(ttl=600)
 def load_data():
-    # 1. Recuperar la llave desde Secrets
+    # 1. Recuperar llave
     json_str = st.secrets["credenciales_json"]
+    key_dict = json.loads(json_str, strict=False)
     
-    # --- AQUÍ ESTÁ EL ARREGLO ---
-    # Usamos strict=False para que perdone los caracteres invisibles del copy-paste
-    key_dict = json.loads(json_str, strict=False) 
-    
-    # 2. Autenticar con Google
+    # 2. Autenticar
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds = Credentials.from_service_account_info(key_dict, scopes=scopes)
     client = gspread.authorize(creds)
     
-    # 3. CONECTAR ARCHIVO FINANCIERO
-    # ID del archivo maestro de negocio
+    # 3. CONECTAR FINANCIERO (Reemplaza con tus IDs si cambian, pero ya deberían estar bien)
+    # Pega aquí tus IDs CORRECTOS que ya buscaste antes
     sheet_fin_id = "1ldntONNpWFgXPcF8VINDKzNAhG_vGMdzGEOESM3aLNU" 
     sh_fin = client.open_by_key(sheet_fin_id)
     ws_movs = sh_fin.worksheet("01_Movimientos financieros desde 2026")
     
-    # Leer datos financieros
     data_fin = ws_movs.get_all_records()
     df_fin = pd.DataFrame(data_fin)
     
-    # Limpieza básica Financiera
-    col_monto = "Monto del movimiento (negativo o positivo)"
-    if col_monto in df_fin.columns:
-        df_fin[col_monto] = df_fin[col_monto].astype(str).str.replace(r'[$,]', '', regex=True)
-        df_fin[col_monto] = pd.to_numeric(df_fin[col_monto], errors='coerce').fillna(0)
+    # --- LIMPIEZA INTELIGENTE DE COLUMNAS ---
+    # Esto quita espacios al principio y final de los nombres de las columnas
+    df_fin.columns = df_fin.columns.str.strip()
     
-    # 4. CONECTAR BACKLOG (Operativo)
-    sheet_ops_id = "1Vl5rhQDi6YooJgjYAF76oOO0aN8rbPtu07giky36wSo"
-    sh_ops = client.open_by_key(sheet_ops_id)
+    # Intentamos encontrar la columna de monto automáticamente
+    col_monto_real = None
+    posibles_nombres = ["Monto del movimiento", "Monto", "Valor", "Monto del movimiento (negativo o positivo)"]
     
-    consultores = ["Sebastian Saenz", "Alejandra Buriticá", "Alejandra Cárdenas", "Jimmy Peña"]
-    all_tasks = []
+    for col in df_fin.columns:
+        for posible in posibles_nombres:
+            if posible in col:
+                col_monto_real = col
+                break
+        if col_monto_real: break
     
-    for consultor in consultores:
-        try:
-            ws = sh_ops.worksheet(consultor)
-            raw_data = ws.get_all_values()
-            headers = raw_data[4] # Encabezados en fila 5
-            rows = raw_data[5:]   # Datos desde fila 6
-            
-            temp_df = pd.DataFrame(rows, columns=headers)
-            temp_df['Consultor'] = consultor
-            
-            cols_tiempo = ['Tiempo estimado', 'Tiempo real']
-            for col in cols_tiempo:
-                if col in temp_df.columns:
-                    temp_df[col] = temp_df[col].astype(str).str.replace(',', '.', regex=False)
-                    temp_df[col] = pd.to_numeric(temp_df[col], errors='coerce').fillna(0)
-            
-            all_tasks.append(temp_df)
-        except:
-            pass
-            
-    df_ops = pd.concat(all_tasks, ignore_index=True) if all_tasks else pd.DataFrame()
+    # Limpieza de datos numéricos
+    if col_monto_real:
+        df_fin[col_monto_real] = df_fin[col_monto_real].astype(str).str.replace(r'[$,]', '', regex=True)
+        df_fin[col_monto_real] = pd.to_numeric(df_fin[col_monto_real], errors='coerce').fillna(0)
+    
+    return df_fin, col_monto_real
 
-    return df_fin, df_ops
-
-# --- LOGICA DE LA APP ---
+# --- CARGA ---
 try:
-    df_fin, df_ops = load_data()
-    st.toast("Conexión establecida con goBIG Cloud", icon="🟢")
+    df_fin, col_monto = load_data()
+    st.toast("Conexión OK", icon="🟢")
 except Exception as e:
-    st.error(f"Error de conexión: {str(e)}")
+    st.error(f"Error: {str(e)}")
     st.stop()
 
 # --- SIDEBAR ---
 st.sidebar.title("goBIG Intelligence")
 st.sidebar.markdown("---")
-view_mode = st.sidebar.radio("Dimensiones:", 
-    ["1. Financiera (Cash Flow)", 
-     "2. Rentabilidad (Clientes)", 
-     "3. Operativa (Eficiencia)"])
+view_mode = st.sidebar.radio("Dimensiones:", ["1. Financiera", "2. Rentabilidad", "3. Operativa"])
+
+# --- ZONA DE DIAGNÓSTICO (NUEVO) ---
+st.sidebar.markdown("---")
+mostrar_diagnostico = st.sidebar.checkbox("🛠️ Modo Diagnóstico")
+
+if mostrar_diagnostico:
+    st.warning("🕵️‍♂️ ZONA DE INSPECCIÓN DE DATOS")
+    st.write("**Nombres de columnas encontrados:**")
+    st.write(list(df_fin.columns))
+    st.write(f"**Columna detectada como Monto:** {col_monto}")
+    st.write("**Primeras 5 filas de datos:**")
+    st.dataframe(df_fin.head())
 
 # --- VISTAS ---
-
 if "Financiera" in view_mode:
     st.title("💰 Financiera: Flujo de Caja Real")
     
-    col_monto = "Monto del movimiento (negativo o positivo)"
-    if not df_fin.empty and col_monto in df_fin.columns:
+    if col_monto:
         ingresos = df_fin[df_fin[col_monto] > 0][col_monto].sum()
         egresos = df_fin[df_fin[col_monto] < 0][col_monto].sum()
         balance = ingresos + egresos
@@ -112,35 +100,19 @@ if "Financiera" in view_mode:
         col2.metric("Egresos Totales", f"${egresos:,.0f}")
         col3.metric("Flujo de Caja Neto", f"${balance:,.0f}")
         
-        st.markdown("---")
-        st.subheader("Movimientos por Centro de Costos")
-        if "Centro de costos" in df_fin.columns:
-            df_grouped = df_fin.groupby("Centro de costos")[col_monto].sum().reset_index()
-            fig = px.bar(df_grouped, x="Centro de costos", y=col_monto, 
+        # Gráfica
+        # Buscamos columna de Centro de Costos de forma flexible
+        col_cc = next((c for c in df_fin.columns if "Centro de costos" in c), None)
+        
+        if col_cc:
+            df_grouped = df_fin.groupby(col_cc)[col_monto].sum().reset_index()
+            fig = px.bar(df_grouped, x=col_cc, y=col_monto, 
                          color=col_monto, color_continuous_scale="RdBu",
                          title="Balance por Cliente")
             fig.update_layout(template="plotly_dark")
             st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("No encontré la columna 'Centro de costos'. Revisa el diagnóstico.")
+            
     else:
-        st.warning("No se encontraron movimientos financieros.")
-
-elif "Rentabilidad" in view_mode:
-    st.title("💎 Rentabilidad por Cliente")
-    st.info("🚧 Módulo en construcción: Cruzando Facturación vs Costos")
-    st.dataframe(df_ops.head())
-
-elif "Operativa" in view_mode:
-    st.title("⚙️ Operativa: Eficiencia del Equipo")
-    
-    if not df_ops.empty:
-        total_horas = df_ops['Tiempo real'].sum()
-        st.metric("Total Horas Ejecutadas (2026)", f"{total_horas:.1f} h")
-        
-        st.subheader("Precisión de Estimaciones")
-        df_eff = df_ops.groupby("Consultor")[['Tiempo estimado', 'Tiempo real']].sum().reset_index()
-        
-        fig_eff = go.Figure()
-        fig_eff.add_trace(go.Bar(x=df_eff['Consultor'], y=df_eff['Tiempo estimado'], name='Estimado'))
-        fig_eff.add_trace(go.Bar(x=df_eff['Consultor'], y=df_eff['Tiempo real'], name='Real'))
-        fig_eff.update_layout(barmode='group', template="plotly_dark")
-        st.plotly_chart(fig_eff, use_container_width=True)
+        st.error("🚨 No pude encontrar la columna de Monto. Activa el 'Modo Diagnóstico' en la izquierda para ver los nombres reales.")
