@@ -91,8 +91,8 @@ def load_data(fin_id, ops_id):
 
 # --- CONFIGURACIÓN DE IDs (TU PARTE) ---
 # 👇 PEGA AQUÍ TUS IDs REALES 👇
-ID_FINANCIERO = "11dntONNpWFgXPcF8VINDKzNAhG_vGMdzGEOESM3aLNU"
-ID_BACKLOG    = "1Vl5rhQDi6YooJgjYAF760000aN8rbPtu07giky36wSo"
+ID_FINANCIERO = "1ldntONNpWFgXPcF8VINDKzNAhG_vGMdzGEOESM3aLNU"
+ID_BACKLOG    = "1jpj48uvz-AE0yg5gA-RO0oQb59tFv9Zt"
 # 👆 -------------------------- 👆
 
 # Carga de Datos
