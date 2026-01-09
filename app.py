@@ -2,100 +2,166 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime
+import gspread
+from google.oauth2.service_account import Credentials
+import json
 
-# Configuración de la página
-st.set_page_config(
-    page_title="goBIG BI 2026",
-    page_icon="🚀",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# --- CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(page_title="goBIG BI 2026", page_icon="🚀", layout="wide")
 
 # Estilos visuales (Modo oscuro profesional)
 st.markdown("""
     <style>
     .main { background-color: #0e1117; }
-    .stMetric { background-color: #262730; padding: 15px; border-radius: 5px; }
+    .stMetric { background-color: #262730; padding: 15px; border-radius: 5px; border: 1px solid #444; }
+    h1, h2, h3 { color: #fff; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 1. CARGA DE DATOS (Simulados por ahora) ---
-@st.cache_data(ttl=3600)
+# --- CONEXIÓN SEGURA A GOOGLE SHEETS ---
+@st.cache_data(ttl=600) # Se actualiza cada 10 minutos
 def load_data():
-    # Aquí simulamos tus datos mientras conectamos las hojas reales
+    # 1. Recuperar la llave desde Secrets
+    json_str = st.secrets["credenciales_json"]
+    key_dict = json.loads(json_str)
     
-    # Simulación Datos Financieros
-    df_financial = pd.DataFrame({
-        'Fecha': pd.date_range(start='2026-01-01', periods=6, freq='M'),
-        'Ingresos': [120000000, 115000000, 130000000, 125000000, 140000000, 135000000],
-        'Egresos': [80000000, 82000000, 79000000, 85000000, 81000000, 83000000],
-        'RST_Provision': [12000000, 11500000, 13000000, 12500000, 14000000, 13500000]
-    })
+    # 2. Autenticar con Google
+    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    creds = Credentials.from_service_account_info(key_dict, scopes=scopes)
+    client = gspread.authorize(creds)
     
-    # Simulación Datos Backlog
-    df_ops = pd.DataFrame({
-        'Consultor': ['Sebastian', 'Alejandra B', 'Alejandra C', 'Jimmy'],
-        'Horas_Estimadas': [160, 150, 170, 160],
-        'Horas_Reales': [155, 165, 160, 158],
-        'Cliente': ['Tienda de Agro', 'Bogoapts', 'H. 93', 'Prospección']
-    })
+    # 3. CONECTAR ARCHIVO FINANCIERO
+    # ID del archivo maestro de negocio
+    sheet_fin_id = "11dntONNpWFgXPcF8VINDKzNAhG_vGMdzGEOESM3aLNU" 
+    sh_fin = client.open_by_key(sheet_fin_id)
+    ws_movs = sh_fin.worksheet("01_Movimientos financieros desde 2026")
     
-    return df_financial, df_ops
+    # Leer datos financieros (asumiendo encabezados en fila 1)
+    data_fin = ws_movs.get_all_records()
+    df_fin = pd.DataFrame(data_fin)
+    
+    # Limpieza básica Financiera
+    # Convertir monto a número (quitando signos $ y comas si existen)
+    col_monto = "Monto del movimiento (negativo o positivo)" # Nombre exacto columna C
+    if col_monto in df_fin.columns:
+        df_fin[col_monto] = df_fin[col_monto].astype(str).str.replace(r'[$,]', '', regex=True)
+        df_fin[col_monto] = pd.to_numeric(df_fin[col_monto], errors='coerce').fillna(0)
+    
+    # 4. CONECTAR BACKLOG (Operativo)
+    # ID del archivo de backlog
+    sheet_ops_id = "1Vl5rhQDi6YooJgjYAF760000aN8rbPtu07giky36wSo"
+    sh_ops = client.open_by_key(sheet_ops_id)
+    
+    # Lista de consultores (hojas a leer)
+    consultores = ["Sebastian Saenz", "Alejandra Buriticá", "Alejandra Cárdenas", "Jimmy Peña"]
+    all_tasks = []
+    
+    for consultor in consultores:
+        try:
+            ws = sh_ops.worksheet(consultor)
+            # Leer datos crudos desde la fila 6 (donde empiezan los datos reales)
+            raw_data = ws.get_all_values()
+            # La fila 5 del sheet (índice 4 en python) son los encabezados
+            headers = raw_data[4] 
+            rows = raw_data[5:] # Datos desde fila 6
+            
+            temp_df = pd.DataFrame(rows, columns=headers)
+            temp_df['Consultor'] = consultor # Añadir columna de quién es
+            
+            # Limpiar columnas de tiempo (Estimado y Real)
+            cols_tiempo = ['Tiempo estimado', 'Tiempo real']
+            for col in cols_tiempo:
+                if col in temp_df.columns:
+                    temp_df[col] = temp_df[col].astype(str).str.replace(',', '.', regex=False)
+                    temp_df[col] = pd.to_numeric(temp_df[col], errors='coerce').fillna(0)
+            
+            all_tasks.append(temp_df)
+        except:
+            pass # Si la hoja no existe o falla, saltar
+            
+    df_ops = pd.concat(all_tasks, ignore_index=True) if all_tasks else pd.DataFrame()
 
-# Cargar los datos
+    return df_fin, df_ops
+
+# --- LOGICA DE LA APP ---
 try:
     df_fin, df_ops = load_data()
+    st.toast("Datos conectados exitosamente a Google Sheets", icon="🟢")
 except Exception as e:
-    st.error(f"Error: {e}")
+    st.error(f"Error de conexión: {str(e)}")
     st.stop()
 
-# --- 2. BARRA LATERAL ---
+# --- SIDEBAR ---
 st.sidebar.title("goBIG Intelligence")
+st.sidebar.markdown("---")
 view_mode = st.sidebar.radio("Dimensiones:", 
-    ["1. Financiera (Cash Flow)", "2. Rentabilidad (Clientes)", 
-     "3. Operativa (Eficiencia)", "4. Proyección 2026"])
-st.sidebar.info(f"📅 Actualizado: {datetime.now().strftime('%d/%m/%Y')}")
+    ["1. Financiera (Cash Flow)", 
+     "2. Rentabilidad (Clientes)", 
+     "3. Operativa (Eficiencia)"])
 
-# --- 3. PANTALLAS PRINCIPALES ---
+# --- VISTAS ---
 
 if "Financiera" in view_mode:
-    st.title("💰 Financiera: Salud del Negocio")
-    col1, col2, col3 = st.columns(3)
-    ingresos = df_fin['Ingresos'].sum()
-    egresos = df_fin['Egresos'].sum()
-    cash_flow = ingresos - egresos
+    st.title("💰 Financiera: Flujo de Caja Real")
     
-    col1.metric("Ingresos YTD", f"${ingresos/1e6:.1f}M", "2.5%")
-    col2.metric("Egresos YTD", f"${egresos/1e6:.1f}M", "-1.2%")
-    col3.metric("Cash Flow Neto", f"${cash_flow/1e6:.1f}M", "5%")
-
-    st.subheader("Evolución P&L Mensual")
-    fig_pl = go.Figure()
-    fig_pl.add_trace(go.Bar(x=df_fin['Fecha'], y=df_fin['Ingresos'], name='Ingresos', marker_color='#00CC96'))
-    fig_pl.add_trace(go.Bar(x=df_fin['Fecha'], y=df_fin['Egresos'], name='Egresos', marker_color='#EF553B'))
-    fig_pl.update_layout(barmode='group', template="plotly_dark", height=400)
-    st.plotly_chart(fig_pl, use_container_width=True)
+    # Calcular KPIs
+    col_monto = "Monto del movimiento (negativo o positivo)"
+    # Ingresos: números positivos
+    ingresos = df_fin[df_fin[col_monto] > 0][col_monto].sum()
+    # Egresos: números negativos
+    egresos = df_fin[df_fin[col_monto] < 0][col_monto].sum()
+    balance = ingresos + egresos # Egresos ya son negativos
+    
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Ingresos Totales", f"${ingresos:,.0f}")
+    col2.metric("Egresos Totales", f"${egresos:,.0f}")
+    col3.metric("Flujo de Caja Neto", f"${balance:,.0f}")
+    
+    st.markdown("---")
+    st.subheader("Movimientos por Centro de Costos")
+    
+    # Gráfica de barras por Centro de Costos
+    if "Centro de costos" in df_fin.columns:
+        df_grouped = df_fin.groupby("Centro de costos")[col_monto].sum().reset_index()
+        fig = px.bar(df_grouped, x="Centro de costos", y=col_monto, 
+                     color=col_monto, color_continuous_scale="RdBu",
+                     title="Balance por Cliente / Centro de Costos")
+        fig.update_layout(template="plotly_dark")
+        st.plotly_chart(fig, use_container_width=True)
+        
+    st.caption("Nota: Datos extraídos directamente de la hoja '01_Movimientos financieros'[cite: 33].")
 
 elif "Rentabilidad" in view_mode:
-    st.title("💎 Rentabilidad")
-    st.subheader("Ranking de Servicios (Simulado)")
-    data_heatmap = pd.DataFrame({
-        'Servicio': ['BI', 'Mkt 360', 'Ads', 'BI', 'Mkt 360', 'Ads'],
-        'Cliente': ['Cliente A', 'Cliente A', 'Cliente B', 'Cliente C', 'Cliente B', 'Cliente C'],
-        'Facturacion': [50, 120, 30, 60, 100, 40]
-    })
-    fig_map = px.density_heatmap(data_heatmap, x="Cliente", y="Servicio", z="Facturacion", 
-                                 title="Mapa de Calor", template="plotly_dark")
-    st.plotly_chart(fig_map, use_container_width=True)
+    st.title("💎 Rentabilidad por Cliente")
+    st.info("🚧 Módulo cruzando Facturación vs Costos de Nómina (Próximamente con Hoja 02 y 04)")
+    
+    # Mostrar tabla cruda de backlog como referencia temporal
+    st.write("Vista preliminar de actividad registrada:")
+    if not df_ops.empty:
+        st.dataframe(df_ops[['Consultor', 'Nombre del cliente', 'Tiempo real']].head(10))
 
 elif "Operativa" in view_mode:
-    st.title("⚙️ Operativa")
-    st.subheader("Eficiencia por Consultor")
-    fig_ops = px.bar(df_ops, x='Consultor', y=['Horas_Estimadas', 'Horas_Reales'], 
-                     barmode='group', template="plotly_dark")
-    st.plotly_chart(fig_ops, use_container_width=True)
-
-elif "Proyección" in view_mode:
-    st.title("🔮 Visión 2026")
-    st.info("Módulo de proyecciones en construcción...")
+    st.title("⚙️ Operativa: Eficiencia del Equipo")
+    
+    if not df_ops.empty:
+        # KPI: Total Horas
+        total_horas = df_ops['Tiempo real'].sum()
+        st.metric("Total Horas Ejecutadas (2026)", f"{total_horas:.1f} h")
+        
+        # Gráfica: Estimado vs Real por Consultor
+        st.subheader("Precisión de Estimaciones (Ratio de Eficiencia)")
+        df_eff = df_ops.groupby("Consultor")[['Tiempo estimado', 'Tiempo real']].sum().reset_index()
+        
+        fig_eff = go.Figure()
+        fig_eff.add_trace(go.Bar(x=df_eff['Consultor'], y=df_eff['Tiempo estimado'], name='Estimado'))
+        fig_eff.add_trace(go.Bar(x=df_eff['Consultor'], y=df_eff['Tiempo real'], name='Real'))
+        fig_eff.update_layout(barmode='group', template="plotly_dark", title="Estimado vs Real [cite: 60]")
+        st.plotly_chart(fig_eff, use_container_width=True)
+        
+        # Alerta Burnout
+        st.subheader("Carga Laboral")
+        st.write("Distribución de horas por tipo de tarea:")
+        fig_pie = px.pie(df_ops, names='Tipo de tarea', values='Tiempo real', hole=0.4, template="plotly_dark")
+        st.plotly_chart(fig_pie)
+    else:
+        st.warning("No se encontraron datos en el Backlog. Verifica los nombres de las hojas.")
