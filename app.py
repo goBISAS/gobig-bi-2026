@@ -35,7 +35,7 @@ def load_data():
     
     # 3. CONECTAR ARCHIVO FINANCIERO
     # ID del archivo maestro de negocio
-    sheet_fin_id = "11dntONNpWFgXPcF8VINDKzNAhG_vGMdzGEOESM3aLNU" 
+    sheet_fin_id = "1ldntONNpWFgXPcF8VINDKzNAhG_vGMdzGEOESM3aLNU" 
     sh_fin = client.open_by_key(sheet_fin_id)
     ws_movs = sh_fin.worksheet("01_Movimientos financieros desde 2026")
     
@@ -50,7 +50,7 @@ def load_data():
         df_fin[col_monto] = pd.to_numeric(df_fin[col_monto], errors='coerce').fillna(0)
     
     # 4. CONECTAR BACKLOG (Operativo)
-    sheet_ops_id = "1Vl5rhQDi6YooJgjYAF760000aN8rbPtu07giky36wSo"
+    sheet_ops_id = "1Vl5rhQDi6YooJgjYAF76oOO0aN8rbPtu07giky36wSo"
     sh_ops = client.open_by_key(sheet_ops_id)
     
     consultores = ["Sebastian Saenz", "Alejandra Buriticá", "Alejandra Cárdenas", "Jimmy Peña"]
